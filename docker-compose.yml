@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  omniprice:
+    build: .
+    container_name: omniprice_repricer
+    ports:
+      - "8502:8502"
+    restart: unless-stopped
+    environment:
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_ENABLE_CORS=false
