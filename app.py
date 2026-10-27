@@ -185,8 +185,11 @@ from engine import (
     export_shopify_csv, 
     export_excel_report,
     hash_similarity_score,
-    hamming_distance
+    hamming_distance,
+    generate_catalog_template,
+    parse_uploaded_catalog
 )
+from scraper import CompetitorScraper, simulate_marketplace_benchmark
 from sample_data import get_default_catalog
 
 # Top Navigation Bar
@@ -194,12 +197,17 @@ st.markdown("""
 <div class="top-nav">
   <div style="display: flex; align-items: center; gap: 10px;">
     <span class="brand-title">🏷️ OmniPrice Pro</span>
-    <span class="version-badge">v2.1 Enterprise</span>
+    <span class="version-badge">v2.5 Enterprise</span>
     <span class="version-badge" style="color: #818CF8; border-color: rgba(99,102,241,0.4); background: rgba(99,102,241,0.1);">Automated Repricer</span>
   </div>
-  <div class="dev-badge">
-    Engineered by Freelancer • Available for Hire
-    <span class="status-dot"></span>
+  <div style="display: flex; align-items: center; gap: 12px;">
+    <a href="https://t.me/Nataly_Zyma" target="_blank" style="text-decoration: none; color: #38BDF8; font-size: 0.85rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.3); padding: 5px 14px; border-radius: 9999px;">
+      ✈️ Написати в Telegram (@Nataly_Zyma)
+    </a>
+    <div class="dev-badge">
+      Розробник: Наталія • areonixwinter@gmail.com
+      <span class="status-dot"></span>
+    </div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -207,6 +215,47 @@ st.markdown("""
 # Initialize Session Catalog
 if "catalog" not in st.session_state:
     st.session_state.catalog = get_default_catalog()
+    st.session_state.source_mode = "demo"
+
+# Catalog Source Switcher & Uploader
+with st.container(border=True):
+    src_c1, src_c2 = st.columns([2.8, 1.2])
+    with src_c1:
+        chosen_mode = st.radio(
+            "Режим каталогу:",
+            ["🛍️ Демонстраційний каталог (5 товарів з аналітикою)", "📁 Завантажити власний прайс (.xlsx / .csv)"],
+            horizontal=True,
+            index=0 if st.session_state.source_mode == "demo" else 1,
+            label_visibility="collapsed"
+        )
+    with src_c2:
+        template_bytes = generate_catalog_template()
+        st.download_button(
+            "📥 Завантажити шаблон прайсу (.xlsx)",
+            data=template_bytes,
+            file_name="omniprice_catalog_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    if "Завантажити власний прайс" in chosen_mode:
+        uploaded_file = st.file_uploader(
+            "Оберіть файл прайс-листа (підтримуються колонки: SKU/Артикул, Title/Назва, Cost Price/Собівартість, Our Price/Наша ціна, Competitor Min/Конкуренти):",
+            type=["xlsx", "xls", "csv"],
+            key="custom_catalog_upload"
+        )
+        if uploaded_file is not None:
+            try:
+                st.session_state.catalog = parse_uploaded_catalog(uploaded_file.read(), uploaded_file.name)
+                st.session_state.source_mode = "custom"
+                st.success(f"✓ Успішно імпортовано {len(st.session_state.catalog)} товарів з файлу «{uploaded_file.name}». Алгоритм переоцінки готовий до розрахунку!")
+            except Exception as e:
+                st.error(f"Помилка завантаження файлу: {e}")
+    else:
+        if st.session_state.source_mode == "custom":
+            st.session_state.catalog = get_default_catalog()
+            st.session_state.source_mode = "demo"
+
 
 # Top Horizontal Control Bar
 with st.container(border=True):
@@ -309,10 +358,11 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # Main Multi-Tab Interface
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Repricing & Margin Terminal",
     "🔍 Visual Match & pHash Inspector",
-    "📈 Market Analytics & Spreads"
+    "📈 Market Analytics & Spreads",
+    "🌐 Live Marketplace Scraper (Тест парсера)"
 ])
 
 # TAB 1: Repricing & Margin Terminal
@@ -474,3 +524,45 @@ with tab3:
             margin=dict(l=40, r=20, t=20, b=40)
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
+
+# TAB 4: Live Marketplace Scraper
+with tab4:
+    st.markdown("""
+    <div style="font-size: 1rem; font-weight: 700; color: #F8FAFC; margin-bottom: 0.3rem;">
+      🌐 Живий модуль моніторингу цін конкурентів (Live Competitor Scraper)
+    </div>
+    <div style="font-size: 0.84rem; color: #94A3B8; margin-bottom: 1.2rem;">
+      Модуль автоматично парсить інтернет-магазини за протоколом Schema.org JSON-LD, OpenGraph та регулярними виразами з обходом антибот-захисту.
+    </div>
+    """, unsafe_allow_html=True)
+
+    test_c1, test_c2 = st.columns([2.5, 1.5])
+    with test_c1:
+        target_prod = st.text_input(
+            "Введіть назву товару або посилання для швидкого аудиту:",
+            value="Sony WH-1000XM5 Noise Canceling Headphones"
+        )
+    with test_c2:
+        st.markdown("<div style='height: 1.7rem;'></div>", unsafe_allow_html=True)
+        run_scrape_btn = st.button("🚀 Просканувати конкурентів (Live Benchmark)", type="primary", use_container_width=True)
+
+    if run_scrape_btn or target_prod:
+        benchmark_results = simulate_marketplace_benchmark(target_prod)
+        st.markdown(f"**Зіставлення цін на маркетплейсах України для:** `{target_prod}`")
+        
+        bench_cols = st.columns(len(benchmark_results))
+        for idx, b_item in enumerate(benchmark_results):
+            with bench_cols[idx]:
+                st.markdown(f"""
+                <div style="background: #121826; border: 1px solid #1F2937; border-radius: 10px; padding: 1rem; line-height: 1.6;">
+                  <div style="font-size: 0.8rem; font-weight: 700; color: #818CF8; text-transform: uppercase;">{b_item['marketplace']}</div>
+                  <div style="font-size: 1.4rem; font-weight: 800; color: #F8FAFC; margin: 4px 0;">{b_item['price']:.2f} {b_item['currency']}</div>
+                  <div style="font-size: 0.8rem; color: #10B981;">● {b_item['availability']}</div>
+                  <div style="font-size: 0.75rem; color: #94A3B8; margin-top: 4px;">{b_item['shipping']}</div>
+                  <div style="font-size: 0.72rem; color: #64748B; margin-top: 4px;">Продавець: {b_item['merchant']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("<div style='height: 1.2rem;'></div>", unsafe_allow_html=True)
+        st.info("💡 **Потрібен парсинг під вашу нішу або власну базу постачальників?** Ми розробляємо кастомні парсери з автоматичною синхронізацією цін у вашій системі обліку (Shopify, Rozetka, Prom, 1C / BAS). Напишіть у Telegram: **[@Nataly_Zyma](https://t.me/Nataly_Zyma)** або на email: **areonixwinter@gmail.com**.")
+

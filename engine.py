@@ -234,3 +234,126 @@ def export_excel_report(df: pd.DataFrame) -> bytes:
     excel_buffer = io.BytesIO()
     wb.save(excel_buffer)
     return excel_buffer.getvalue()
+
+
+def generate_catalog_template() -> bytes:
+    """Generates an Excel template (.xlsx) for merchants to populate their own catalog."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Catalog Template"
+    headers = [
+        "SKU", "Title", "Category", "Cost Price", 
+        "Our Price", "Competitor 1 (MegaStore)", "Competitor 2 (TechZone)", "Competitor 3 (ElectroHub)"
+    ]
+    ws.append(headers)
+    sample_rows = [
+        ["TECH-001", "Apple MacBook Air 13 M2 (256GB / Midnight)", "Laptops & Computers", 850.00, 1099.00, 1049.00, 1079.00, 1090.00],
+        ["AUDIO-002", "Sony WH-1000XM5 Wireless Headphones", "Audio & Acoustics", 260.00, 349.00, 329.00, 339.00, 355.00],
+        ["SMART-003", "Garmin Forerunner 965 GPS Watch", "Wearables & Fitness", 440.00, 599.00, 579.00, 599.00, 589.00],
+        ["HOME-004", "Dyson V15 Detect Cordless Vacuum", "Home Appliances", 520.00, 749.00, 719.00, 739.00, 750.00],
+        ["OFFICE-005", "Logitech MX Master 3S Wireless Mouse", "Computer Accessories", 65.00, 99.00, 94.00, 96.00, 99.00]
+    ]
+    for r in sample_rows:
+        ws.append(r)
+    # Styles
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 14)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def parse_uploaded_catalog(file_bytes: bytes, filename: str) -> List[Dict[str, Any]]:
+    """
+    Parses an uploaded CSV or Excel file into a normalized catalog list.
+    Supports English and Ukrainian column headers with tolerant fallback.
+    """
+    if filename.endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(file_bytes))
+    else:
+        df = pd.read_excel(io.BytesIO(file_bytes))
+        
+    col_map = {}
+    for col in df.columns:
+        c_clean = str(col).strip().lower()
+        if c_clean in ["sku", "артикул", "код", "item_id"]:
+            col_map[col] = "SKU"
+        elif c_clean in ["title", "product title", "назва", "наименование", "товар", "name"]:
+            col_map[col] = "Title"
+        elif c_clean in ["category", "категорія", "категория"]:
+            col_map[col] = "Category"
+        elif any(k in c_clean for k in ["cost", "себестоим", "собіварт", "закуп", "вход"]):
+            col_map[col] = "Cost Price"
+        elif any(k in c_clean for k in ["our", "наша", "текущ", "поточн", "price", "ціна"]):
+            if "cost" not in c_clean and "comp" not in c_clean:
+                col_map[col] = "Our Price"
+        elif any(k in c_clean for k in ["competitor 1", "конкурент 1", "comp1", "comp 1"]):
+            col_map[col] = "Competitor 1 (MegaStore)"
+        elif any(k in c_clean for k in ["competitor 2", "конкурент 2", "comp2", "comp 2"]):
+            col_map[col] = "Competitor 2 (TechZone)"
+        elif any(k in c_clean for k in ["competitor 3", "конкурент 3", "comp3", "comp 3"]):
+            col_map[col] = "Competitor 3 (ElectroHub)"
+        elif any(k in c_clean for k in ["competitor min", "comp min", "мин конк", "мін конк"]):
+            col_map[col] = "Competitor Min"
+
+    df = df.rename(columns=col_map)
+    
+    if "SKU" not in df.columns:
+        df["SKU"] = [f"ITEM-{i+1:03d}" for i in range(len(df))]
+    if "Title" not in df.columns:
+        df["Title"] = [f"Custom Product {i+1}" for i in range(len(df))]
+    if "Category" not in df.columns:
+        df["Category"] = "General Retail"
+    if "Cost Price" not in df.columns:
+        df["Cost Price"] = 50.0
+    if "Our Price" not in df.columns:
+        df["Our Price"] = df["Cost Price"] * 1.35
+    
+    if "Competitor 1 (MegaStore)" not in df.columns:
+        df["Competitor 1 (MegaStore)"] = df.get("Competitor Min", df["Our Price"] * 0.96)
+    if "Competitor 2 (TechZone)" not in df.columns:
+        df["Competitor 2 (TechZone)"] = df["Our Price"] * 0.98
+    if "Competitor 3 (ElectroHub)" not in df.columns:
+        df["Competitor 3 (ElectroHub)"] = df["Our Price"] * 1.02
+
+    for num_col in ["Cost Price", "Our Price", "Competitor 1 (MegaStore)", "Competitor 2 (TechZone)", "Competitor 3 (ElectroHub)"]:
+        df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0.0)
+
+    catalog = []
+    for idx, row in df.iterrows():
+        img_our = Image.new("RGB", (140, 140), color=(240, 243, 246))
+        d = ImageDraw.Draw(img_our)
+        hue = (idx * 47) % 255
+        d.rounded_rectangle([30, 30, 110, 110], radius=12, fill=(hue, 80, 160))
+        d.text((45, 60), f"#{idx+1}", fill=(255, 255, 255))
+        
+        img_comp = Image.new("RGB", (140, 140), color=(240, 243, 246))
+        d_comp = ImageDraw.Draw(img_comp)
+        d_comp.rounded_rectangle([30, 30, 110, 110], radius=12, fill=(hue, 85, 155))
+        d_comp.text((45, 60), f"#{idx+1}", fill=(255, 255, 255))
+        
+        catalog.append({
+            "SKU": str(row["SKU"]),
+            "Title": str(row["Title"]),
+            "Category": str(row["Category"]),
+            "Cost Price": float(row["Cost Price"]),
+            "Our Price": float(row["Our Price"]),
+            "Competitor 1 (MegaStore)": float(row["Competitor 1 (MegaStore)"]),
+            "Competitor 2 (TechZone)": float(row["Competitor 2 (TechZone)"]),
+            "Competitor 3 (ElectroHub)": float(row["Competitor 3 (ElectroHub)"]),
+            "Our Image": img_our,
+            "Comp Image": img_comp,
+            "Our Image Hash": compute_dhash(img_our),
+            "Comp Image Hash": compute_dhash(img_comp)
+        })
+    return catalog
+
